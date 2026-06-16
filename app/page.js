@@ -393,7 +393,7 @@ export default function Home() {
               style={{ ...inputStyle, marginBottom: 4 }}
             />
             <small style={{ color: "#888", display: "block", marginBottom: 12 }}>
-              Leave blank to use CMS name: "{facilityData.provider_name}"
+              Leave blank to use CMS name: &quot;{facilityData.provider_name}&quot;
             </small>
 
             <label style={labelStyle}>EMR System</label>
