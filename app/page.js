@@ -1,3 +1,11 @@
+/**
+ * @author Angela Wu
+ * @project Medelite Facility Assessment Report Generator
+ * @date 06/16/2026
+ * @description Fetches CMS nursing home data by CCN and generates
+ *              PDF and Word Doc facility assessment snapshots.
+ */
+
 "use client";
 import { useState } from "react";
 import jsPDF from "jspdf";
@@ -21,12 +29,17 @@ const COL_STR_ED_AVG   = "percentage_of_short_stay_residents_who_had_an_outpatie
 const COL_LT_HOSP_AVG  = "number_of_hospitalizations_per_1000_longstay_resident_days";
 const COL_LT_ED_AVG    = "number_of_outpatient_emergency_department_visits_per_1000_l_de9d";
 
-const CMS = "https://data.cms.gov/provider-data/api/1/datastore/query";
+// ─── Proxy helper — all CMS fetches go through /api/cms to avoid CORS ─────
+const CMS_BASE = "https://data.cms.gov/provider-data/api/1/datastore/query";
+
+function cmsUrl(dataset, params) {
+  const full = `${CMS_BASE}/${dataset}/0?${params}`;
+  return `/api/cms?endpoint=${encodeURIComponent(full)}`;
+}
 
 export default function Home() {
   const [ccn, setCcn] = useState("");
 
-  // All data arrives together — no partial renders
   const [facilityData, setFacilityData] = useState(null);
   const [claimsData,   setClaimsData]   = useState([]);
   const [stateAvg,     setStateAvg]     = useState({});
@@ -34,7 +47,7 @@ export default function Home() {
 
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState(null);
-  const [dataReady, setDataReady] = useState(false); // ← gates the preview
+  const [dataReady, setDataReady] = useState(false);
 
   // Manual inputs
   const [nameOverride,        setNameOverride]        = useState("");
@@ -45,7 +58,7 @@ export default function Home() {
   const [previousPerformance, setPreviousPerformance] = useState("");
   const [medicalCoverage,     setMedicalCoverage]     = useState("");
 
-  // ─── Fetch ALL data in parallel, commit in one batch ──────────────────────
+  // ─── Fetch ALL data ────────────────────────────────────────────────────────
   async function fetchFacility() {
     if (!ccn.trim()) return;
     setLoading(true);
@@ -53,13 +66,10 @@ export default function Home() {
     setError(null);
 
     try {
-      // Step 1: get provider info first (we need state for the avg queries)
-      const provRes  = await fetch(
-        `${CMS}/${DS_PROVIDER}/0` +
-        `?conditions[0][property]=cms_certification_number_ccn` +
-        `&conditions[0][value]=${ccn.trim()}` +
-        `&conditions[0][operator]==`
-      );
+      // Step 1: provider info (need state before firing avg queries)
+      const provRes  = await fetch(cmsUrl(DS_PROVIDER,
+        `conditions[0][property]=cms_certification_number_ccn&conditions[0][value]=${ccn.trim()}&conditions[0][operator]==`
+      ));
       const provJson = await provRes.json();
 
       if (!provJson.results?.length) {
@@ -71,26 +81,17 @@ export default function Home() {
       const facility = provJson.results[0];
       const state    = facility.state;
 
-      // Step 2: fire claims + state avg + national avg all at once
+      // Step 2: claims + state avg + national avg in parallel
       const [claimsRes, stateRes, nationRes] = await Promise.all([
-        fetch(
-          `${CMS}/${DS_CLAIMS}/0` +
-          `?conditions[0][property]=cms_certification_number_ccn` +
-          `&conditions[0][value]=${ccn.trim()}` +
-          `&conditions[0][operator]==&limit=100`
-        ),
-        fetch(
-          `${CMS}/${DS_STATE_AVG}/0` +
-          `?conditions[0][property]=state_or_nation` +
-          `&conditions[0][value]=${state}` +
-          `&conditions[0][operator]==`
-        ),
-        fetch(
-          `${CMS}/${DS_STATE_AVG}/0` +
-          `?conditions[0][property]=state_or_nation` +
-          `&conditions[0][value]=NATION` +
-          `&conditions[0][operator]==`
-        ),
+        fetch(cmsUrl(DS_CLAIMS,
+          `conditions[0][property]=cms_certification_number_ccn&conditions[0][value]=${ccn.trim()}&conditions[0][operator]==&limit=100`
+        )),
+        fetch(cmsUrl(DS_STATE_AVG,
+          `conditions[0][property]=state_or_nation&conditions[0][value]=${state}&conditions[0][operator]==`
+        )),
+        fetch(cmsUrl(DS_STATE_AVG,
+          `conditions[0][property]=state_or_nation&conditions[0][value]=NATION&conditions[0][operator]==`
+        )),
       ]);
 
       const [claimsJson, stateJson, nationJson] = await Promise.all([
@@ -103,13 +104,13 @@ export default function Home() {
       const sAvg   = stateJson.results?.[0]  || {};
       const nAvg   = nationJson.results?.[0] || {};
 
-      // ── Commit everything at once so the UI never shows partial data ──────
+      // Commit all at once — no partial renders
       setFacilityData(facility);
       setClaimsData(claims);
       setStateAvg(sAvg);
       setNationAvg(nAvg);
       setNameOverride("");
-      setDataReady(true); // ← flips last, triggers preview render
+      setDataReady(true);
 
     } catch (err) {
       console.error(err);
@@ -188,7 +189,7 @@ export default function Home() {
       });
       doc.addImage(base64, "PNG", 65, 8, 80, 22);
     } catch {
-      console.warn("Logo could not be loaded; skipping.");
+      console.warn("Logo not loaded; skipping.");
     }
 
     doc.setFontSize(13);
@@ -205,16 +206,10 @@ export default function Home() {
     const rowH     = 8.5;
     const pageH    = 280;
     const allRows  = getAllRows();
-
-    // Track Y position across pages properly
     let y = startY;
 
     allRows.forEach(([label, value], i) => {
-      // New page if this row would overflow
-      if (y + rowH > pageH) {
-        doc.addPage();
-        y = 20; // top margin on new page
-      }
+      if (y + rowH > pageH) { doc.addPage(); y = 20; }
 
       if (i % 2 === 0) {
         doc.setFillColor(245, 245, 245);
@@ -228,111 +223,102 @@ export default function Home() {
       doc.setFontSize(8.5);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(0, 0, 0);
-      const labelText = doc.splitTextToSize(label, colSplit - leftX - 3)[0];
-      doc.text(labelText, leftX + 2, y + 5.5);
-
+      doc.text(doc.splitTextToSize(label, colSplit - leftX - 3)[0], leftX + 2, y + 5.5);
       doc.setFont("helvetica", "normal");
       doc.text(String(value), colSplit + 3, y + 5.5);
 
       y += rowH;
     });
 
-    // Medicare link — on whatever page we ended on
     doc.setFontSize(9);
     doc.setTextColor(6, 69, 173);
     doc.textWithLink(
       "View official Medicare Care Compare profile",
-      leftX,
-      y + 10,
+      leftX, y + 10,
       { url: `https://www.medicare.gov/care-compare/details/nursing-home/${ccn.trim()}` }
     );
 
     doc.save(`Facility_Assessment_${displayName.replace(/\s+/g, "_")}.pdf`);
   }
 
+  // ─── DOCX Download ────────────────────────────────────────────────────────
   async function downloadDocx() {
-  if (!facilityData || !dataReady) return;
+    if (!facilityData || !dataReady) return;
 
-  // Load logo as ArrayBuffer
-  let logoBuffer = null;
-  try {
-    const res = await fetch(window.location.origin + "/infinite_logo.png");
-    logoBuffer = await res.arrayBuffer();
-  } catch {
-    console.warn("Logo not loaded");
+    let logoBuffer = null;
+    try {
+      const res = await fetch(window.location.origin + "/infinite_logo.png");
+      logoBuffer = await res.arrayBuffer();
+    } catch {
+      console.warn("Logo not loaded");
+    }
+
+    const allRows = getAllRows();
+
+    const tableRows = allRows.map(([label, value], i) =>
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 50, type: WidthType.PERCENTAGE },
+            shading: i % 2 === 0 ? { fill: "F5F5F5" } : undefined,
+            children: [new Paragraph({
+              children: [new TextRun({ text: label, bold: true, size: 20 })]
+            })],
+          }),
+          new TableCell({
+            width: { size: 50, type: WidthType.PERCENTAGE },
+            shading: i % 2 === 0 ? { fill: "F5F5F5" } : undefined,
+            children: [new Paragraph({
+              children: [new TextRun({ text: String(value), size: 20 })]
+            })],
+          }),
+        ],
+      })
+    );
+
+    const children = [];
+
+    if (logoBuffer) {
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new ImageRun({
+          data: logoBuffer,
+          transformation: { width: 200, height: 55 },
+          type: "png",
+        })],
+      }));
+    }
+
+    children.push(
+      new Paragraph({
+        text: "FACILITY ASSESSMENT SNAPSHOT",
+        heading: HeadingLevel.HEADING_1,
+        alignment: AlignmentType.CENTER,
+      }),
+      new Paragraph({
+        text: facilityData.state || "",
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 200 },
+      }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: tableRows,
+      }),
+      new Paragraph({ text: "" }),
+      new Paragraph({
+        children: [new TextRun({
+          text: "View official Medicare Care Compare profile",
+          color: "0645AD",
+          underline: {},
+          size: 18,
+        })],
+      })
+    );
+
+    const doc = new Document({ sections: [{ children }] });
+    const blob = await Packer.toBlob(doc);
+    saveAs(blob, `Facility_Assessment_${displayName.replace(/\s+/g, "_")}.docx`);
   }
-
-  const allRows = getAllRows();
-
-  const tableRows = allRows.map(([label, value], i) =>
-    new TableRow({
-      children: [
-        new TableCell({
-          width: { size: 50, type: WidthType.PERCENTAGE },
-          shading: i % 2 === 0 ? { fill: "F5F5F5" } : undefined,
-          children: [new Paragraph({
-            children: [new TextRun({ text: label, bold: true, size: 20 })]
-          })],
-        }),
-        new TableCell({
-          width: { size: 50, type: WidthType.PERCENTAGE },
-          shading: i % 2 === 0 ? { fill: "F5F5F5" } : undefined,
-          children: [new Paragraph({
-            children: [new TextRun({ text: String(value), size: 20 })]
-          })],
-        }),
-      ],
-    })
-  );
-
-  const children = [];
-
-  // Logo
-  if (logoBuffer) {
-    children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new ImageRun({
-        data: logoBuffer,
-        transformation: { width: 200, height: 55 },
-        type: "png",
-      })],
-    }));
-  }
-
-  // Title
-  children.push(
-    new Paragraph({
-      text: "FACILITY ASSESSMENT SNAPSHOT",
-      heading: HeadingLevel.HEADING_1,
-      alignment: AlignmentType.CENTER,
-    }),
-    new Paragraph({
-      text: facilityData.state || "",
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 200 },
-    }),
-    new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: tableRows,
-    }),
-    new Paragraph({ text: "" }), // spacer
-    new Paragraph({
-      children: [new TextRun({
-        text: "View official Medicare Care Compare profile",
-        color: "0645AD",
-        underline: {},
-        size: 18,
-      })],
-    })
-  );
-
-  const doc = new Document({
-    sections: [{ children }],
-  });
-
-  const blob = await Packer.toBlob(doc);
-  saveAs(blob, `Facility_Assessment_${displayName.replace(/\s+/g, "_")}.docx`);
-}
 
   // ─── Styles ───────────────────────────────────────────────────────────────
   const box        = { background: "#fff", border: "1px solid #ddd", borderRadius: 12, padding: 24, marginBottom: 20 };
@@ -344,7 +330,6 @@ export default function Home() {
   return (
     <main style={{ fontFamily: "sans-serif", maxWidth: 700, margin: "40px auto", padding: "0 20px 60px" }}>
 
-      {/* BRANDING BANNER */}
       <div style={{ textAlign: "center", marginBottom: 32 }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/infinite_logo.png" alt="INFINITE Managed by MEDELITE" style={{ width: 260, height: "auto" }} />
@@ -369,7 +354,6 @@ export default function Home() {
         {error && <p style={{ color: "red", marginTop: 12 }}>{error}</p>}
       </div>
 
-      {/* Loading skeleton — shows while waiting for ALL data */}
       {loading && (
         <div style={{ ...box, textAlign: "center", color: "#888", padding: 40 }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
@@ -377,10 +361,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Only render once ALL data is ready — no N/A flash */}
       {dataReady && facilityData && (
         <>
-          {/* Manual Inputs */}
           <div style={box}>
             <h3 style={{ marginTop: 0 }}>Facility Details</h3>
 
@@ -450,7 +432,7 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Download */}
+          {/* Download Buttons */}
           <div style={{ textAlign: "center", display: "flex", gap: 16, justifyContent: "center" }}>
             <button
               onClick={downloadPDF}
