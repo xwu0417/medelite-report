@@ -535,7 +535,7 @@ export default function Home() {
 
         {/* ── Footer ── */}
         <div style={{ textAlign: "center", color: "#d1d5db", fontSize: 12, marginTop: 48 }}>
-          Built by <strong style={{ color: "#9ca3af" }}>Andrew Wu</strong> · Medelite Technical Assessment · {new Date().getFullYear()}
+          Built by <strong style={{ color: "#9ca3af" }}>Angela Wu</strong> · Medelite Technical Assessment · {new Date().getFullYear()}
         </div>
 
       </div>
